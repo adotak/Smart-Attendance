@@ -45,15 +45,13 @@ print("Encoding Complete")
 
 def markAttendance(name):
     today = datetime.now().strftime('%Y-%m-%d')
-    attendance_file = 'attendance.csv'
-
+    attendance_file = 'Attendance.csv'
 
     try:
         with open(attendance_file, 'r') as f:
             existing_data = list(csv.reader(f))
     except FileNotFoundError:
         existing_data = []
-
 
     names_today = [row[0] for row in existing_data if len(row) > 1 and row[1].startswith(today)]
     if name in names_today:
