@@ -20,9 +20,16 @@ import numpy as np
 import csv
 from datetime import datetime
 
+try:
+    from deepface import DeepFace
+except ImportError:
+    DeepFace = None
+    print("[WARNING] DeepFace not installed. Emotion detection will be disabled.")
+
 # --- Configuration ---
 DATASET_PATH = 'dataset'
 ATTENDANCE_FILE = 'Attendance.csv'
+DETECT_EMOTIONS = True  # Built-in option to toggle emotion sensing
 
 def load_images_from_dataset(path):
     images = []
@@ -117,6 +124,26 @@ def main():
                 name = classNames[matchIndex].upper()
                 markAttendance(name)
 
+                # Emotion Sensing
+                emotion_text = ""
+                if DETECT_EMOTIONS and DeepFace is not None:
+                    try:
+                        # Crop face for emotion analysis to speed up processing
+                        face_crop = img[y1:y2, x1:x2]
+                        if face_crop.size > 0:
+                            analysis = DeepFace.analyze(face_crop, actions=['emotion'], enforce_detection=False, silent=True)
+                            # DeepFace returns a list of dicts or a dict depending on version
+                            if isinstance(analysis, list):
+                                analysis = analysis[0]
+                            dom_emotion = analysis.get('dominant_emotion', '')
+                            if dom_emotion:
+                                emotion_text = f" ({dom_emotion})"
+                    except Exception as e:
+                        # Ignore errors if face is too blurry or DeepFace fails
+                        pass
+
+                display_text = f"{name}{emotion_text}"
+
                 # Draw fancy bounding box and name
                 y1, x2, y2, x1 = faceLoc
                 y1, x2, y2, x1 = y1*4, x2*4, y2*4, x1*4
@@ -124,8 +151,8 @@ def main():
                 # Draw Box
                 cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 # Draw filled rectangle for name background
-                cv2.rectangle(img, (x1, y2 - 35), (x2, y2), (0, 255, 0), cv2.FILLED)
-                cv2.putText(img, name, (x1 + 6, y2 - 6), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 2)
+                cv2.rectangle(img, (x1, y2 - 35), (x2 + (len(emotion_text)*10), y2), (0, 255, 0), cv2.FILLED)
+                cv2.putText(img, display_text, (x1 + 6, y2 - 6), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 2)
 
         # Display FPS
         cv2.putText(img, f'FPS: {int(fps)}', (20, 50), cv2.FONT_HERSHEY_DUPLEX, 1, (255, 0, 0), 2)
