@@ -1,52 +1,75 @@
-# FaceSentinel AI 🚀
+# FaceSentinel AI
 
-A high-performance, real-time Smart Attendance System built with Python, OpenCV, and DeepFace. FaceSentinel AI automatically recognizes faces, tracks attendance, logs it to a CSV file, and provides a sleek live visual overlay—including real-time emotion sensing!
+FaceSentinel AI is a local, privacy-friendly attendance tool that recognizes registered faces from a webcam and records one check-in per person per day. It uses OpenCV and `face_recognition`; optional DeepFace emotion analysis is available when explicitly enabled.
 
-## Features ✨
-- **Blazing Fast Face Recognition:** Automatically detects and identifies users from a live webcam feed.
-- **Real-Time Visual Status:** 
-  - 🟩 **[JUST MARKED!]**: Green bounding box feedback when attendance is successfully logged.
-  - 🟧 **[LOGGED]**: Orange bounding box feedback for users who have already checked in today.
-- **Emotion Sensing (Built-in Option):** Seamless integration with `deepface` to display the user's dominant emotion (e.g., happy, neutral, sad) directly on the live feed.
-- **Optimized Memory Caching:** Avoids repetitive disk I/O by caching today's attendees in memory, preventing lag and stuttering in the video feed.
-- **Live FPS Counter:** Monitor system performance in real-time.
+## What it does
 
-## Setup & Installation 🛠️
+- Loads supported images from `dataset/` and ignores unrelated files.
+- Rejects low-confidence matches as `UNKNOWN` using a configurable distance threshold.
+- Handles multiple faces in one frame and shows live FPS and face count.
+- Writes UTF-8 CSV records to `Attendance.csv` in the format `NAME,TIMESTAMP`.
+- Prevents duplicate attendance entries for the current date.
+- Supports optional, throttled emotion analysis so it does not run on every frame.
+- Exits cleanly with **Q**, **Enter**, or **Esc**.
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/adotak/Smart-Attendance.git
-   cd Smart-Attendance
-   ```
+## Installation
 
-2. **Install the required dependencies:**
-   ```bash
-   pip install opencv-python face-recognition dlib numpy cmake
-   ```
-   *(Optional) For Emotion Sensing, install deepface (requires Python 3.8-3.11 with tensorflow support):*
-   ```bash
-   pip install deepface tf-keras
-   ```
+Python 3.9+ is recommended. `face-recognition` may require a C++ build toolchain because it depends on dlib.
 
-3. **Add Face Data:**
-   - Create a folder named `dataset` in the root directory.
-   - Add images of the people you want to track inside the `dataset` folder. 
-   - Name the image files exactly as you want the person's name to appear (e.g., `John_Doe.jpg`).
+```bash
+git clone https://github.com/adotak/Smart-Attendance.git
+cd Smart-Attendance
+python -m venv .venv
+# Linux/macOS:
+source .venv/bin/activate
+# Windows:
+# .venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install opencv-python face-recognition numpy
+```
 
-## Usage 🚀
+For optional emotion analysis:
 
-Run the main application:
+```bash
+python -m pip install deepface tf-keras
+```
+
+## Add registered faces
+
+Create `dataset/` and add one clear image per person. The filename becomes the displayed name:
+
+```text
+dataset/
+├── Ada_Lovelace.jpg
+└── Alan_Turing.png
+```
+
+The script uses the first face in an image and warns when an image is unreadable, contains no face, or contains multiple faces.
+
+## Run
+
 ```bash
 python FaceSentinel_AI.py
 ```
 
-- The system will load the faces from the `dataset` directory and start your webcam.
-- Attendance logs are automatically saved to `Attendance.csv` with timestamps.
-- **Press `Enter`** while focused on the webcam window to safely exit the application.
+Useful options:
 
-## Configuration ⚙️
-
-You can easily toggle the emotion sensing feature directly inside `FaceSentinel_AI.py`:
-```python
-DETECT_EMOTIONS = True # Set to False to instantly disable emotion detection
+```bash
+python FaceSentinel_AI.py --camera 1 --tolerance 0.45 --scale 0.5
+python FaceSentinel_AI.py --emotions --emotion-interval 3
+python FaceSentinel_AI.py --dataset people --attendance logs/Attendance.csv
 ```
+
+Lower `--tolerance` is stricter and reduces false matches. Increase `--scale` when recognition needs more detail, at the cost of performance. The default emotion mode is off because DeepFace is resource-intensive.
+
+## Data and privacy
+
+Face images and attendance records remain on the local machine. Do not commit personal images or generated attendance logs. The included `Attendance.csv` is only a placeholder; use a `.gitignore` entry for real data in deployments.
+
+## Troubleshooting
+
+- **Camera unavailable:** try another `--camera` index and check OS camera permissions.
+- **No faces loaded:** use a well-lit, front-facing image in `dataset/`.
+- **Too many unknown matches:** increase `--tolerance` slightly.
+- **False matches:** lower `--tolerance` and use clearer registration images.
+- **DeepFace errors:** run without `--emotions`; recognition and attendance do not depend on it.

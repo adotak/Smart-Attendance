@@ -1,188 +1,272 @@
-# pip install opencv-python face-recognition numpy
-# pip install cmake
-# pip install dlib
-# pip install face-recognition
+"""FaceSentinel AI: webcam face recognition with daily attendance tracking."""
 
+from __future__ import annotations
 
-#folder
-# rootDirectory
-##--->dataset
-###----->YourName.png
-##--->Attendance.csv
-##--->main.py
+import argparse
+import csv
+import logging
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 import cv2
 import face_recognition
-import os
-import sys
-import time
 import numpy as np
-import csv
-from datetime import datetime
 
 try:
     from deepface import DeepFace
 except ImportError:
     DeepFace = None
-    print("[WARNING] DeepFace not installed. Emotion detection will be disabled.")
-
-# --- Configuration ---
-DATASET_PATH = 'dataset'
-ATTENDANCE_FILE = 'Attendance.csv'
-DETECT_EMOTIONS = True  # Built-in option to toggle emotion sensing
-
-def load_images_from_dataset(path):
-    images = []
-    classNames = []
-    
-    if not os.path.exists(path):
-        print(f"[ERROR] '{path}' directory not found! Please create it and add face images.")
-        sys.exit(1)
-        
-    for file in os.listdir(path):
-        img_path = f'{path}/{file}'
-        img = cv2.imread(img_path)
-        if img is not None:
-            images.append(img)
-            classNames.append(os.path.splitext(file)[0])
-        else:
-            print(f"[WARNING] Could not read image: {file}")
-            
-    print(f"[INFO] Loaded {len(classNames)} Student Images: {classNames}")
-    return images, classNames
 
 
-def findEncodings(images):
-    encodeList = []
-    for img in images:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        encodes = face_recognition.face_encodings(img)
-        if len(encodes) > 0:
-            encodeList.append(encodes[0])
-        else:
-            print("[WARNING] No face found in one of the loaded images.")
-    return encodeList
+LOGGER = logging.getLogger("facesentinel")
+SUPPORTED_IMAGE_TYPES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
-marked_today = set()
+@dataclass(frozen=True)
+class Settings:
+    dataset: Path
+    attendance_file: Path
+    camera: int = 0
+    scale: float = 0.25
+    tolerance: float = 0.50
+    emotions: bool = False
+    emotion_interval: float = 2.0
 
-def load_todays_attendance():
-    today = datetime.now().strftime('%Y-%m-%d')
-    try:
-        with open(ATTENDANCE_FILE, 'r') as f:
-            for row in csv.reader(f):
-                if len(row) > 1 and row[1].startswith(today):
-                    marked_today.add(row[0])
-    except FileNotFoundError:
-        pass
 
-def markAttendance(name):
-    if name in marked_today:
+def parse_args() -> Settings:
+    parser = argparse.ArgumentParser(
+        description="Recognize registered faces and record one attendance entry per day."
+    )
+    parser.add_argument("--dataset", type=Path, default=Path("dataset"))
+    parser.add_argument("--attendance", type=Path, default=Path("Attendance.csv"))
+    parser.add_argument("--camera", type=int, default=0, help="Camera device index.")
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=0.25,
+        help="Face-recognition frame scale (0.25 is fast; use 0.5 for accuracy).",
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=0.50,
+        help="Maximum face distance to accept (lower is stricter).",
+    )
+    parser.add_argument(
+        "--emotions",
+        action="store_true",
+        help="Enable optional DeepFace emotion analysis.",
+    )
+    parser.add_argument("--emotion-interval", type=float, default=2.0)
+    args = parser.parse_args()
+
+    if not 0.1 <= args.scale <= 1.0:
+        parser.error("--scale must be between 0.1 and 1.0")
+    if not 0.2 <= args.tolerance <= 0.8:
+        parser.error("--tolerance must be between 0.2 and 0.8")
+    if args.emotion_interval <= 0:
+        parser.error("--emotion-interval must be greater than zero")
+    return Settings(
+        dataset=args.dataset,
+        attendance_file=args.attendance,
+        camera=args.camera,
+        scale=args.scale,
+        tolerance=args.tolerance,
+        emotions=args.emotions,
+        emotion_interval=args.emotion_interval,
+    )
+
+
+def load_known_faces(dataset: Path) -> tuple[list[np.ndarray], list[str]]:
+    if not dataset.is_dir():
+        raise FileNotFoundError(
+            f"Dataset directory '{dataset}' does not exist. Create it and add face images."
+        )
+
+    encodings: list[np.ndarray] = []
+    names: list[str] = []
+    for image_path in sorted(dataset.iterdir()):
+        if image_path.suffix.lower() not in SUPPORTED_IMAGE_TYPES:
+            continue
+        image = cv2.imread(str(image_path))
+        if image is None:
+            LOGGER.warning("Skipping unreadable image: %s", image_path.name)
+            continue
+        locations = face_recognition.face_locations(
+            cv2.cvtColor(image, cv2.COLOR_BGR2RGB), model="hog"
+        )
+        image_encodings = face_recognition.face_encodings(
+            cv2.cvtColor(image, cv2.COLOR_BGR2RGB), locations
+        )
+        if not image_encodings:
+            LOGGER.warning("No face found in %s; skipping it.", image_path.name)
+            continue
+        if len(image_encodings) > 1:
+            LOGGER.warning("Multiple faces found in %s; using the first one.", image_path.name)
+        encodings.append(image_encodings[0])
+        names.append(image_path.stem.replace("_", " ").strip().upper())
+
+    if not encodings:
+        raise ValueError(f"No usable face images found in '{dataset}'.")
+    LOGGER.info("Loaded %d registered face(s): %s", len(names), ", ".join(names))
+    return encodings, names
+
+
+def load_todays_attendance(attendance_file: Path, today: str) -> set[str]:
+    marked: set[str] = set()
+    if not attendance_file.exists():
+        return marked
+    with attendance_file.open("r", newline="", encoding="utf-8") as file:
+        for row in csv.reader(file):
+            if len(row) >= 2 and row[0].strip() and row[1].startswith(today):
+                marked.add(row[0].strip().upper())
+    return marked
+
+
+def mark_attendance(
+    name: str, attendance_file: Path, marked_today: set[str]
+) -> bool:
+    normalized_name = name.strip().upper()
+    if normalized_name in marked_today:
         return False
-        
-    today = datetime.now().strftime('%Y-%m-%d')
-    with open(ATTENDANCE_FILE, 'a', newline='') as f:
-        now = datetime.now()
-        dtString = now.strftime('%Y-%m-%d %H:%M:%S')
-        f.write(f'{name},{dtString}\n')
-        print(f"[SUCCESS] Attendance marked for {name} at {dtString}")
-        marked_today.add(name)
-        return True
+    attendance_file.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with attendance_file.open("a", newline="", encoding="utf-8") as file:
+        csv.writer(file).writerow([normalized_name, timestamp])
+    marked_today.add(normalized_name)
+    LOGGER.info("Attendance marked for %s at %s", normalized_name, timestamp)
+    return True
 
-def main():
-    print("[INFO] Starting FaceSentinel AI...")
-    load_todays_attendance()
-    images, classNames = load_images_from_dataset(DATASET_PATH)
-    
-    if not images:
-        print("[ERROR] No valid images found. Exiting.")
-        return
 
-    print("[INFO] Encoding faces...")
-    encodeListKnown = findEncodings(images)
-    print("[INFO] Encoding Complete!")
+def analyze_emotion(face_crop: np.ndarray) -> Optional[str]:
+    if DeepFace is None or face_crop.size == 0:
+        return None
+    try:
+        result = DeepFace.analyze(
+            face_crop, actions=["emotion"], enforce_detection=False, silent=True
+        )
+    except Exception as error:
+        LOGGER.debug("Emotion analysis unavailable for this frame: %s", error)
+        return None
+    result = result[0] if isinstance(result, list) and result else result
+    emotion = result.get("dominant_emotion") if isinstance(result, dict) else None
+    return str(emotion) if emotion else None
 
-    cap = cv2.VideoCapture(0)
-    pTime = 0
-    recently_marked = {}
 
-    while True:
-        success, img = cap.read()
-        if not success:
-            print("[ERROR] Failed to open camera. Exiting.")
-            break
+def draw_face(
+    frame: np.ndarray,
+    location: tuple[int, int, int, int],
+    label: str,
+    color: tuple[int, int, int],
+) -> None:
+    top, right, bottom, left = location
+    cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+    (text_width, text_height), _ = cv2.getTextSize(
+        label, cv2.FONT_HERSHEY_DUPLEX, 0.55, 1
+    )
+    text_top = max(0, bottom - text_height - 12)
+    cv2.rectangle(
+        frame, (left, text_top), (left + text_width + 12, bottom), color, cv2.FILLED
+    )
+    cv2.putText(
+        frame,
+        label,
+        (left + 6, bottom - 6),
+        cv2.FONT_HERSHEY_DUPLEX,
+        0.55,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
 
-        # Calculate FPS
-        cTime = time.time()
-        fps = 1 / (cTime - pTime) if (cTime - pTime) > 0 else 0
-        pTime = cTime
 
-        imgSmall = cv2.resize(img, (0, 0), None, 0.25, 0.25)
-        imgSmall = cv2.cvtColor(imgSmall, cv2.COLOR_BGR2RGB)
+def run(settings: Settings) -> int:
+    emotions_enabled = settings.emotions and DeepFace is not None
+    if settings.emotions and not emotions_enabled:
+        LOGGER.warning("DeepFace is not installed; continuing without emotions.")
 
-        facesCurFrame = face_recognition.face_locations(imgSmall)
-        encodesCurFrame = face_recognition.face_encodings(imgSmall, facesCurFrame)
+    known_encodings, known_names = load_known_faces(settings.dataset)
+    today = datetime.now().strftime("%Y-%m-%d")
+    marked_today = load_todays_attendance(settings.attendance_file, today)
+    LOGGER.info("%d attendance record(s) already exist for today.", len(marked_today))
 
-        for encodeFace, faceLoc in zip(encodesCurFrame, facesCurFrame):
-            matches = face_recognition.compare_faces(encodeListKnown, encodeFace)
-            faceDis = face_recognition.face_distance(encodeListKnown, encodeFace)
-            matchIndex = np.argmin(faceDis)
+    camera = cv2.VideoCapture(settings.camera)
+    if not camera.isOpened():
+        raise RuntimeError(f"Unable to open camera {settings.camera}.")
 
-            if matches[matchIndex]:
-                name = classNames[matchIndex].upper()
-                is_new = markAttendance(name)
-                
-                if is_new:
-                    recently_marked[name] = time.time()
+    last_time = time.monotonic()
+    emotion_cache: dict[int, tuple[float, str]] = {}
+    try:
+        while True:
+            success, frame = camera.read()
+            if not success:
+                raise RuntimeError("The camera stopped returning frames.")
 
-                # Determine visual status
-                box_color = (255, 165, 0)  # Orange for already logged
-                status_text = " [LOGGED]"
-                
-                if name in recently_marked and (time.time() - recently_marked[name]) < 4:
-                    box_color = (0, 255, 0)  # Green for just marked
-                    status_text = " [JUST MARKED!]"
+            small_frame = cv2.resize(frame, None, fx=settings.scale, fy=settings.scale)
+            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+            locations = face_recognition.face_locations(rgb_small_frame, model="hog")
+            encodings = face_recognition.face_encodings(rgb_small_frame, locations)
 
-                # Emotion Sensing
-                emotion_text = ""
-                if DETECT_EMOTIONS and DeepFace is not None:
-                    try:
-                        # Crop face for emotion analysis to speed up processing
-                        face_crop = img[y1:y2, x1:x2]
-                        if face_crop.size > 0:
-                            analysis = DeepFace.analyze(face_crop, actions=['emotion'], enforce_detection=False, silent=True)
-                            # DeepFace returns a list of dicts or a dict depending on version
-                            if isinstance(analysis, list):
-                                analysis = analysis[0]
-                            dom_emotion = analysis.get('dominant_emotion', '')
-                            if dom_emotion:
-                                emotion_text = f" ({dom_emotion})"
-                    except Exception as e:
-                        # Ignore errors if face is too blurry or DeepFace fails
-                        pass
+            for index, (encoding, small_location) in enumerate(zip(encodings, locations)):
+                distances = face_recognition.face_distance(known_encodings, encoding)
+                best_index = int(np.argmin(distances))
+                distance = float(distances[best_index])
+                top, right, bottom, left = (
+                    int(value / settings.scale) for value in small_location
+                )
+                crop = frame[max(0, top):bottom, max(0, left):right]
 
-                display_text = f"{name}{status_text}{emotion_text}"
+                if distance <= settings.tolerance:
+                    name = known_names[best_index]
+                    just_marked = mark_attendance(
+                        name, settings.attendance_file, marked_today
+                    )
+                    label = f"{name} {'JUST MARKED' if just_marked else 'LOGGED'}"
+                    color = (0, 200, 0) if just_marked else (0, 165, 255)
+                    if emotions_enabled:
+                        cached_at, emotion = emotion_cache.get(index, (0.0, ""))
+                        if time.monotonic() - cached_at >= settings.emotion_interval:
+                            emotion = analyze_emotion(crop) or ""
+                            emotion_cache[index] = (time.monotonic(), emotion)
+                        if emotion:
+                            label += f" ({emotion})"
+                else:
+                    label = f"UNKNOWN ({distance:.2f})"
+                    color = (0, 0, 255)
+                draw_face(frame, (top, right, bottom, left), label, color)
 
-                # Draw fancy bounding box and name
-                y1, x2, y2, x1 = faceLoc
-                y1, x2, y2, x1 = y1*4, x2*4, y2*4, x1*4
-                
-                # Draw Box
-                cv2.rectangle(img, (x1, y1), (x2, y2), box_color, 2)
-                # Draw filled rectangle for name background
-                cv2.rectangle(img, (x1, y2 - 35), (x2 + (len(display_text)*11), y2), box_color, cv2.FILLED)
-                cv2.putText(img, display_text, (x1 + 6, y2 - 6), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 2)
+            now = time.monotonic()
+            fps = 1 / max(now - last_time, 1e-6)
+            last_time = now
+            cv2.putText(
+                frame, f"FPS: {fps:.1f} | Faces: {len(locations)}",
+                (20, 35), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA
+            )
+            cv2.imshow("FaceSentinel AI - Press Q or Enter to exit", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 13, 27):
+                break
+    finally:
+        camera.release()
+        cv2.destroyAllWindows()
+    return 0
 
-        # Display FPS
-        cv2.putText(img, f'FPS: {int(fps)}', (20, 50), cv2.FONT_HERSHEY_DUPLEX, 1, (255, 0, 0), 2)
 
-        cv2.imshow('FaceSentinel AI - Press Enter to Exit', img)
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+    try:
+        return run(parse_args())
+    except (FileNotFoundError, ValueError, RuntimeError) as error:
+        LOGGER.error("%s", error)
+        return 1
+    except KeyboardInterrupt:
+        LOGGER.info("Stopped by user.")
+        return 0
 
-        if cv2.waitKey(1) == 13:
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
