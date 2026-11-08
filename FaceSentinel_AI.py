@@ -96,12 +96,9 @@ def load_known_faces(dataset: Path) -> tuple[list[np.ndarray], list[str]]:
         if image is None:
             LOGGER.warning("Skipping unreadable image: %s", image_path.name)
             continue
-        locations = face_recognition.face_locations(
-            cv2.cvtColor(image, cv2.COLOR_BGR2RGB), model="hog"
-        )
-        image_encodings = face_recognition.face_encodings(
-            cv2.cvtColor(image, cv2.COLOR_BGR2RGB), locations
-        )
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        locations = face_recognition.face_locations(rgb_image, model="hog")
+        image_encodings = face_recognition.face_encodings(rgb_image, locations)
         if not image_encodings:
             LOGGER.warning("No face found in %s; skipping it.", image_path.name)
             continue
@@ -190,6 +187,7 @@ def run(settings: Settings) -> int:
         LOGGER.warning("DeepFace is not installed; continuing without emotions.")
 
     known_encodings, known_names = load_known_faces(settings.dataset)
+    known_encoding_matrix = np.asarray(known_encodings)
     today = datetime.now().strftime("%Y-%m-%d")
     marked_today = load_todays_attendance(settings.attendance_file, today)
     LOGGER.info("%d attendance record(s) already exist for today.", len(marked_today))
@@ -212,7 +210,7 @@ def run(settings: Settings) -> int:
             encodings = face_recognition.face_encodings(rgb_small_frame, locations)
 
             for index, (encoding, small_location) in enumerate(zip(encodings, locations)):
-                distances = face_recognition.face_distance(known_encodings, encoding)
+                distances = np.linalg.norm(known_encoding_matrix - encoding, axis=1)
                 best_index = int(np.argmin(distances))
                 distance = float(distances[best_index])
                 top, right, bottom, left = (
