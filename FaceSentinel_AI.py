@@ -64,6 +64,8 @@ def parse_args() -> Settings:
     parser.add_argument("--emotion-interval", type=float, default=2.0)
     args = parser.parse_args()
 
+    if args.camera < 0:
+        parser.error("--camera must be zero or greater")
     if not 0.1 <= args.scale <= 1.0:
         parser.error("--scale must be between 0.1 and 1.0")
     if not 0.2 <= args.tolerance <= 0.8:
