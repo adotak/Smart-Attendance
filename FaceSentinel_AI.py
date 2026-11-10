@@ -35,6 +35,7 @@ class Settings:
     tolerance: float = 0.50
     emotions: bool = False
     emotion_interval: float = 2.0
+    log_level: str = "INFO"
 
 
 def parse_args() -> Settings:
@@ -62,6 +63,12 @@ def parse_args() -> Settings:
         help="Enable optional DeepFace emotion analysis.",
     )
     parser.add_argument("--emotion-interval", type=float, default=2.0)
+    parser.add_argument(
+        "--log-level",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default="INFO",
+        help="Set the application logging level.",
+    )
     args = parser.parse_args()
 
     if args.camera < 0:
@@ -80,6 +87,7 @@ def parse_args() -> Settings:
         tolerance=args.tolerance,
         emotions=args.emotions,
         emotion_interval=args.emotion_interval,
+        log_level=args.log_level,
     )
 
 
@@ -257,9 +265,13 @@ def run(settings: Settings) -> int:
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     try:
-        return run(parse_args())
+        settings = parse_args()
+        logging.basicConfig(
+            level=getattr(logging, settings.log_level),
+            format="[%(levelname)s] %(message)s",
+        )
+        return run(settings)
     except (FileNotFoundError, ValueError, RuntimeError) as error:
         LOGGER.error("%s", error)
         return 1

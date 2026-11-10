@@ -25,7 +25,7 @@ source .venv/bin/activate
 # Windows:
 # .venv\Scripts\activate
 python -m pip install --upgrade pip
-python -m pip install opencv-python face-recognition numpy
+python -m pip install -r requirements.txt
 ```
 
 For optional emotion analysis:
@@ -58,9 +58,11 @@ Useful options:
 python FaceSentinel_AI.py --camera 1 --tolerance 0.45 --scale 0.5
 python FaceSentinel_AI.py --emotions --emotion-interval 3
 python FaceSentinel_AI.py --dataset people --attendance logs/Attendance.csv
+python FaceSentinel_AI.py --log-level DEBUG
 ```
 
 Lower `--tolerance` is stricter and reduces false matches. Increase `--scale` when recognition needs more detail, at the cost of performance. The default emotion mode is off because DeepFace is resource-intensive.
+Use `--log-level DEBUG` when diagnosing camera or optional emotion-analysis issues.
 
 ## Data and privacy
 
